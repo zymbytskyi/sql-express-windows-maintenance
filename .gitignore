@@ -1,0 +1,8 @@
+/Runs/
+/Packages/
+/Release/
+*.bak
+*.exe
+*.zip
+*.log
+*.clixml
