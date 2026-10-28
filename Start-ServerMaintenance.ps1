@@ -6,6 +6,8 @@ param(
     [switch]$Confirm,[switch]$Resume,
     [ValidateSet('0','1')][string]$BackupChoice,
     [string]$LocalPackagePath,[string]$InstanceName,
+    [ValidateRange(1,3650)][int]$BackupMaxAgeDays=7,
+    [switch]$AcceptBackupRisk,
     [string]$RunRoot=(Join-Path $PSScriptRoot 'Runs')
 )
 Set-StrictMode -Version 2
@@ -33,13 +35,14 @@ function Save-PatchState {
     if(Test-Path $statePath){[IO.File]::Replace($temp,$statePath,[NullString]::Value)}else{[IO.File]::Move($temp,$statePath)}
 }
 function Assert-ExpressHost {
+    if(-not[Environment]::Is64BitProcess){throw 'Use 64-bit Windows PowerShell so all SQL instances are inventoried.'}
     if((Get-CimInstance Win32_OperatingSystem).ProductType-ne3){throw 'This package supports Windows Server member/standalone servers only, not clients or domain controllers.'}
     if(Test-Path 'HKLM:\Cluster'){throw 'Cluster membership is not supported.'}
     if(Get-Service ClusSvc -ErrorAction SilentlyContinue){throw 'Failover Cluster Service is present; standalone hosts only.'}
     $map=Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL'
-    $registered=@($map.PSObject.Properties|Where-Object{$_.Name-notmatch'^PS'})
+    $registered=@($map.PSObject.Properties|Where-Object{$_.Name-notin@('PSPath','PSParentPath','PSChildName','PSDrive','PSProvider')})
     $instances=@(Get-LocalExpressInstances)
-    if(-not$instances.Count-or$instances.Count-ne$registered.Count){throw 'Every local SQL instance must be query-ready SQL Server 2019, 2022 or 2025 Express. See the per-instance diagnostics above; unsupported editions and inaccessible instances remain blocked.'}
+    if(-not$instances.Count-or$instances.Count-ne$registered.Count){throw 'Every local SQL instance must be query-ready SQL Server 2017/2019/2022/2025. See diagnostics above; unsupported engines and inaccessible instances remain blocked.'}
     foreach($instance in $instances){
         if(-not$instance.IsSysadmin){throw "SQL sysadmin required: $($instance.DisplayName)"}
         $q="SELECT CAST(SERVERPROPERTY('IsClustered') AS int) C, CAST(SERVERPROPERTY('IsHadrEnabled') AS int) H, (SELECT COUNT(*) FROM sys.availability_replicas) R;"
@@ -53,7 +56,7 @@ function Request-PatchRestart {
     $State.Stage='AwaitingRestart';$State.NextStage=$NextStage;$State.BootBefore=Get-BootStamp;Save-PatchState $State
     Write-Host 'Restart required. Saved state; run this same script after signing in. No scheduled task or automatic resume.' -ForegroundColor Yellow
     if(-not$Confirm-and(Test-Yes (Read-Host 'Restart now? [y/N]'))){
-        & shutdown.exe /r /t 30 /d p:4:2 /c 'SQL Express and Windows maintenance'
+        & shutdown.exe /r /t 30 /d p:4:2 /c 'SQL Server and Windows maintenance'
         if($LASTEXITCODE-ne0){throw 'Restart request failed; restart manually.'}
     }
 }
@@ -63,6 +66,11 @@ function Test-FinalHealth {
         $q='SELECT name,state_desc,HAS_DBACCESS(name) AS HasAccess FROM sys.databases;'
         foreach($row in (Invoke-SqlQuery $instance.ServerInstance $q).Rows){if($row.state_desc-ne'ONLINE'-or$row.HasAccess-ne1){throw "Database not ready: $($instance.DisplayName)/$($row.name)"}}
         if($State.TargetVersion-and$instance.InstanceName-eq$State.Instance-and[version]$instance.Version-lt[version]$State.TargetVersion){throw 'SQL build is below the selected target.'}
+        if($State.PSObject.Properties.Name-contains'CompletedSql'){
+            foreach($done in @($State.CompletedSql|Where-Object Instance -eq $instance.InstanceName)){
+                if([version]$instance.Version-lt[version]$done.Version){throw "Previously completed SQL instance is below its target: $($instance.DisplayName)"}
+            }
+        }
         Write-Host "PASS: $($instance.DisplayName) $($instance.Version); all databases online and accessible." -ForegroundColor Green
     }
     $stopped=@(Get-CimInstance Win32_Service|Where-Object{$_.StartMode-eq'Auto'-and$_.State-ne'Running'})
@@ -95,7 +103,7 @@ try{
     if($state-and$state.MachineId-ne$machine){throw 'State belongs to another Windows host.'}
     if($Mode-eq'Check'){
         $instances=@(Assert-ExpressHost)
-        foreach($item in $instances){Write-Host "$($item.DisplayName) $($item.Version)";Show-BackupHistory $item.ServerInstance}
+        foreach($item in $instances){Write-Host "$($item.DisplayName) $($item.Version)";Show-BackupHistory $item.ServerInstance -MaxAgeDays $BackupMaxAgeDays}
         Show-WindowsUpdateScan (Get-WindowsUpdateScan)
         Write-Host "Pending restart: $(Test-PendingRestart)";return
     }
@@ -114,24 +122,33 @@ try{
     }else{
         $instances=@(Assert-ExpressHost)
         if($Mode-eq'Menu'){
-            Write-Host "SQL EXPRESS + WINDOWS MAINTENANCE`n1. SQL Express only`n2. Windows Update only`n3. Windows Update + SQL Express`n0. Exit"
+            Write-Host "SQL SERVER + WINDOWS MAINTENANCE`n1. All local SQL instances`n2. Windows Update only`n3. Windows Update + all local SQL instances`n0. Exit"
             switch(Read-Host 'Select'){'1'{$Mode='Sql'}'2'{$Mode='Windows'}'3'{$Mode='All'}'0'{return}default{throw 'Select 0-3.'}}
         }
-        if(-not$InstanceName){$instance=Select-Instance;$InstanceName=$instance.InstanceName}
+        $queue=if($InstanceName){@($InstanceName)}else{@($instances.InstanceName)}
+        if(-not$InstanceName){$InstanceName=$queue[0]}
         if(-not@($instances|Where-Object InstanceName -eq $InstanceName).Count){throw 'Selected instance not found.'}
+        if($LocalPackagePath-and$queue.Count-gt1){throw 'Local media requires an explicit -InstanceName. Automatic selection supports all instances.'}
+        Write-Host ('SQL scope (sequential): '+($queue -join ', '))
+        if($Mode-ne'Windows'-and-not$Confirm-and-not(Test-Yes (Read-Host 'Confirm this SQL instance scope? [y/N]'))){return}
         if($state){Copy-Item $statePath (Join-Path $RunRoot ('Completed-'+[guid]::NewGuid().ToString('N')+'.json'))}
         $state=[pscustomobject]@{Schema=1;MachineId=$machine;Mode=$Mode;Instance=$InstanceName;Stage='Backups';NextStage='';BootBefore='';RestartRequired=$false;TargetVersion='';PackagePath='';PackageHash='';UpdatedUtc='';Updates=@();WindowsHistory=@()}
+        $state|Add-Member NoteProperty SqlQueue @($queue)
+        $state|Add-Member NoteProperty CompletedSql @()
         Save-PatchState $state
     }
+    Initialize-SqlQueue $state $instances
+    if($LocalPackagePath-and@($state.SqlQueue).Count-gt1){throw 'Local media cannot be reused across a multi-instance run. Resume using automatic selection.'}
     if(Get-Process setup,msiexec -ErrorAction SilentlyContinue){throw 'Another Setup/MSI process is active. Review before maintenance.'}
     if($state.RestartRequired-or(Test-PendingRestart)){Request-PatchRestart $state $state.Stage;return}
     if($state.Stage-eq'Backups'){
-        foreach($item in $instances){Show-BackupHistory $item.ServerInstance}
-        if(-not$BackupChoice){$BackupChoice=Read-Host 'Create verified COPY_ONLY system backups on all local Express instances? 0 no, 1 yes [0]';if(-not$BackupChoice){$BackupChoice='0'}}
+        foreach($item in $instances){Show-BackupHistory $item.ServerInstance -MaxAgeDays $BackupMaxAgeDays}
+        if(-not$BackupChoice){$BackupChoice=Read-Host 'Create verified COPY_ONLY system backups on all local SQL instances? 0 no, 1 yes [0]';if(-not$BackupChoice){$BackupChoice='0'}}
         if($BackupChoice-notin@('0','1')){throw 'Backup choice must be 0 or 1.'}
         if($BackupChoice-eq'1'){
             foreach($item in $instances){Invoke-SystemBackups $item}
         }
+        Confirm-BackupReadiness $instances -MaxAgeDays $BackupMaxAgeDays -AcceptRisk:$AcceptBackupRisk -Unattended:$Confirm
         $state.Stage=if($Mode-eq'Sql'){'Sql'}else{'WindowsScan'};Save-PatchState $state
     }
     if($state.Stage-in@('WindowsScan','DownloadingWindows')){
@@ -145,9 +162,11 @@ try{
         }
         if($state.Stage-eq'WindowsScan'){Write-Host 'Three batches completed. Run again to rescan dependencies before continuing.';return}
     }
+    while($true){
     for($sqlPass=0;$sqlPass-lt1-and$state.Stage-eq'Sql';$sqlPass++){
         $instance=@(Assert-ExpressHost|Where-Object InstanceName -eq $state.Instance)[0]
         if(-not$instance){throw 'Saved SQL instance is no longer available.'}
+        Confirm-BackupReadiness @($instance) -MaxAgeDays $BackupMaxAgeDays -AcceptRisk:$AcceptBackupRisk -Unattended:$Confirm
         $major=([version]$instance.Version).Major
         $latest=$null
         $package=$LocalPackagePath
@@ -181,8 +200,14 @@ try{
     if($state.Stage-eq'Sql'){Write-Host 'SQL maintenance is not complete. Run again to continue to the latest security target.';return}
     if($state.Stage-eq'Verify'){
         Test-FinalHealth $state;Start-Sleep -Seconds 3;Test-FinalHealth $state
-        $state.Stage='Complete';Save-PatchState $state
+        if($state.Mode-ne'Windows'){
+            Complete-SqlQueueItem $state
+            Save-PatchState $state
+            if($state.Stage-eq'Sql'){continue}
+        }else{$state.Stage='Complete';Save-PatchState $state}
         Write-Host 'COMPLETE: selected maintenance phases and final checks passed.' -ForegroundColor Green
+    }
+    break
     }
 }catch{Write-Host "FAILED: $($_.Exception.Message)" -ForegroundColor Red;exit 1}
 finally{if($transcript){Stop-Transcript|Out-Null};if($sqlAcquired){$sqlMutex.ReleaseMutex()};$sqlMutex.Dispose();if($acquired){$mutex.ReleaseMutex()};$mutex.Dispose()}

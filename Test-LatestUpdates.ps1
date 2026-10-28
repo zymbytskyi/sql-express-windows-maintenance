@@ -5,7 +5,7 @@ Set-StrictMode -Version 2
 . (Join-Path $PSScriptRoot SqlExpress.Core.ps1)
 function Assert($Condition,$Message){if(-not$Condition){throw $Message}}
 if($Live){
-    foreach($major in @(15,16,17)){
+    foreach($major in @(14,15,16,17)){
         $u=Get-LatestUpdate $major ([version]"$major.0.1000.1")
         Write-Output "PASS live RTM plan: $major -> $($u.Name) -> $($u.FinalName) $($u.FinalKB) $($u.FinalVersion) $($u.FinalReleased)"
         Assert (-not$u.IsPrerequisite-and$u.Version-eq$u.FinalVersion) 'Unexpected intermediate CU'
@@ -77,8 +77,10 @@ function Save-PatchState {param($State)}
 function Invoke-QuietSqlSetup {param($Package,$InstanceName,$Major);$script:installs++;$script:installed=$script:stepVersion;return $script:setupCode}
 function Test-PendingRestart {return $false}
 function Wait-AutomaticSqlServices {}
+function Confirm-BackupReadiness {param($Instances,$MaxAgeDays,[switch]$AcceptRisk,[switch]$Unattended)}
 function Request-PatchRestart {param($State,$NextStage);$State.Stage='AwaitingRestart';$State.NextStage=$NextStage}
 $Confirm=$true;$LocalPackagePath=$null
+$BackupMaxAgeDays=7;$AcceptBackupRisk=$false
 foreach($code in @(0,3010)){
     $script:installed='15.0.1000.1';$script:installs=0;$script:setupCode=$code
     $state=[pscustomobject]@{Stage='Sql';Instance='TEST';TargetVersion='';PackagePath='';PackageHash='';RestartRequired=$false;NextStage=''}

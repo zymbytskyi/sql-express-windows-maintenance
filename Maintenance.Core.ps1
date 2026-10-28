@@ -1,6 +1,31 @@
+function Initialize-SqlQueue {
+    param($State,[object[]]$Instances)
+    # Old journals retain their explicitly selected single instance; never silently widen scope.
+    if($State.PSObject.Properties.Name-notcontains'SqlQueue'){$State|Add-Member NoteProperty SqlQueue @($State.Instance)}
+    if($State.PSObject.Properties.Name-notcontains'CompletedSql'){$State|Add-Member NoteProperty CompletedSql @()}
+    if(-not@($State.SqlQueue).Count-or@($State.SqlQueue|Select-Object -Unique).Count-ne@($State.SqlQueue).Count){throw 'Invalid saved SQL instance queue.'}
+    foreach($name in $State.SqlQueue){if($name-notin@($Instances.InstanceName)){throw "Saved SQL instance is unavailable: $name"}}
+    if($State.Instance-notin@($State.SqlQueue)){throw 'Active instance is outside the saved SQL scope.'}
+}
+
+function Complete-SqlQueueItem {
+    param($State)
+    if(-not$State.TargetVersion){throw 'Cannot complete SQL instance without a verified target build.'}
+    $State.CompletedSql=@($State.CompletedSql|Where-Object Instance -ne $State.Instance)+@([pscustomobject]@{Instance=$State.Instance;Version=$State.TargetVersion})
+    $done=@($State.CompletedSql|ForEach-Object{$_.Instance})
+    $remaining=@($State.SqlQueue|Where-Object{$_-notin$done})
+    if($remaining.Count){
+        $State.Instance=$remaining[0];$State.TargetVersion='';$State.PackagePath='';$State.PackageHash='';$State.Stage='Sql'
+        Write-Host "Next SQL instance: $($State.Instance)"
+    }else{$State.Stage='Complete'}
+}
+
 function Invoke-SystemBackups {
     param($Instance)
     $root=[string](Invoke-SqlQuery $Instance.ServerInstance "SELECT CAST(SERVERPROPERTY('InstanceDefaultBackupPath') AS nvarchar(4000)) AS P;").Rows[0].P
+    if(-not$root){
+        $root=[string](Invoke-SqlQuery $Instance.ServerInstance "DECLARE @p nvarchar(4000); EXEC master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE', N'SOFTWARE\Microsoft\MSSQLServer\MSSQLServer', N'BackupDirectory', @p OUTPUT; SELECT @p AS P;").Rows[0].P
+    }
     if(-not$root-or-not(Test-Path $root -PathType Container)){throw 'SQL default backup directory is unavailable.'}
     foreach($name in @('master','model','msdb')){
         $file=Join-Path $root ($Instance.InstanceName+'_'+$name+'_COPY_ONLY_'+[guid]::NewGuid().ToString('N')+'.bak')
@@ -44,7 +69,7 @@ function Assert-SqlPackage {
     if(([version](Get-Item $Path).VersionInfo.ProductVersion).Major-ne$Major){throw 'SQL package major version does not match the target instance.'}
 }
 function Invoke-QuietSqlSetup {
-    param([string]$Package,[string]$InstanceName,[ValidateSet(15,16,17)][int]$Major=16)
+    param([string]$Package,[string]$InstanceName,[ValidateSet(14,15,16,17)][int]$Major=16)
     $arguments=@('/quiet','/hideconsole','/action=patch',"/instancename=$InstanceName",'/IAcceptSQLServerLicenseTerms')
     $process=Start-Process -FilePath $Package -ArgumentList $arguments -WindowStyle Hidden -PassThru
     try{
@@ -61,7 +86,7 @@ function Assert-LatestExpressCu {
     $url='https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-'+$release.Year+'/build-versions'
     try { $html=(Invoke-WebRequest $url -UseBasicParsing -TimeoutSec 60).Content }
     catch {
-        $kb=switch($Major){15{'kb4518398'}16{'kb5023451'}17{'kb5005684'}}
+        $kb=switch($Major){14{'kb4047329'}15{'kb4518398'}16{'kb5023451'}17{'kb5005684'}}
         $fallback='https://support.microsoft.com/en-us/servicing/sql/sql-server-'+$release.Year+'/'+$kb+'-build-versions'
         $html=(Invoke-WebRequest $fallback -UseBasicParsing -TimeoutSec 60).Content
     }

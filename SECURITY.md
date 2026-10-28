@@ -1,6 +1,8 @@
 # Security and scope
 
-Run locally in elevated Windows PowerShell 5.1 using your existing Windows account. Local administrator and SQL sysadmin are required. Only standalone Windows Server hosts containing query-ready SQL Server 2019, 2022 or 2025 Express instances are in scope. Mixed supported Express versions are allowed, but other editions and inaccessible instances block the entire host. No remote patching, clusters, AG, FCI, drivers or OS feature upgrades.
+Run locally in elevated Windows PowerShell 5.1 using your existing Windows account. Local administrator and SQL sysadmin are required. Only standalone Windows Server hosts containing query-ready SQL Server 2017, 2019, 2022 or 2025 Database Engine instances are in scope. All local editions (EngineEdition 2, 3, 4), including Standard Developer, are supported. Inaccessible instances, unsupported versions/engines and any WSFC/AG/FCI configuration block the entire host. No remote patching, cloud database services, drivers or OS feature upgrades. New runs patch all local SQL instances sequentially unless narrowed with -InstanceName; persisted old scopes remain unchanged.
+
+Missing/old full-backup history requires explicit risk acceptance. -Confirm does not imply -AcceptBackupRisk. A green history status does not verify external media, log-chain completeness, RPO or restore capability. New optional system backups use COPY_ONLY,CHECKSUM and VERIFYONLY; arrange a tested user-database and OS recovery plan separately.
 
 Windows Update uses the existing WUA source and policies. It never registers Microsoft Update, bypasses WSUS, disables Defender, adds exclusions, or modifies Windows Update reboot policy. Existing corporate automatic restart policies still apply; use an approved maintenance window.
 

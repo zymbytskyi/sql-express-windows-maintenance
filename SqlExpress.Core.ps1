@@ -26,10 +26,11 @@ function Invoke-SqlQuery {
 function Get-SqlRelease {
     param([Parameter(Mandatory)][int]$Major)
     switch ($Major) {
+        14 { [pscustomobject]@{Year=2017; Major=14; DownloadId=56128} }
         15 { [pscustomobject]@{Year=2019; Major=15; DownloadId=100809} }
         16 { [pscustomobject]@{Year=2022; Major=16; DownloadId=105013} }
         17 { [pscustomobject]@{Year=2025; Major=17; DownloadId=108788} }
-        default { throw "Unsupported SQL major version $Major. Supported Express releases: 2019, 2022, 2025." }
+        default { throw "Unsupported SQL major version $Major. Supported SQL releases: 2017, 2019, 2022, 2025." }
     }
 }
 
@@ -38,19 +39,20 @@ function Get-LocalExpressInstances {
     if (-not (Test-Path -LiteralPath $registryPath)) { throw 'No local SQL Server Database Engine instance was found.' }
     $map = Get-ItemProperty -LiteralPath $registryPath
     $instances = New-Object System.Collections.Generic.List[object]
-    foreach ($property in $map.PSObject.Properties | Where-Object { $_.Name -notmatch '^PS' }) {
+    foreach ($property in $map.PSObject.Properties | Where-Object { $_.Name -notin @('PSPath','PSParentPath','PSChildName','PSDrive','PSProvider') }) {
         $instanceName = [string]$property.Name
         $serverInstance = if ($instanceName -eq 'MSSQLSERVER') { 'localhost' } else { "localhost\$instanceName" }
         try {
             $query = @"
 SELECT CAST(SERVERPROPERTY('Edition') AS nvarchar(128)) AS Edition,
+       CAST(SERVERPROPERTY('EngineEdition') AS int) AS EngineEdition,
        CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(32)) AS ProductVersion,
        CAST(SERVERPROPERTY('ProductUpdateLevel') AS nvarchar(32)) AS ProductUpdateLevel,
        ISNULL(IS_SRVROLEMEMBER(N'sysadmin'), 0) AS IsSysadmin;
 "@
             $row = (Invoke-SqlQuery -ServerInstance $serverInstance -Query $query).Rows[0]
             Write-Host "$serverInstance | $($row.Edition) | $($row.ProductVersion)"
-            if (([version][string]$row.ProductVersion).Major -in @(15,16,17) -and [string]$row.Edition -match 'Express') {
+            if (([version][string]$row.ProductVersion).Major -in @(14,15,16,17) -and [int]$row.EngineEdition -in @(2,3,4)) {
                 $instances.Add([pscustomobject]@{
                     InstanceName = $instanceName
                     ServerInstance = $serverInstance
@@ -60,7 +62,7 @@ SELECT CAST(SERVERPROPERTY('Edition') AS nvarchar(128)) AS Edition,
                     Update = [string]$row.ProductUpdateLevel
                     IsSysadmin = [bool]$row.IsSysadmin
                 })
-            } else { Write-Warning "$serverInstance is unsupported: $($row.Edition), $($row.ProductVersion). Expected Express 2019, 2022 or 2025." }
+            } else { Write-Warning "$serverInstance is unsupported: $($row.Edition), $($row.ProductVersion). Expected local SQL Server 2017/2019/2022/2025 Database Engine." }
         }
         catch {
             Write-Warning "Could not query local instance '$serverInstance': $($_.Exception.Message)"
@@ -71,7 +73,7 @@ SELECT CAST(SERVERPROPERTY('Edition') AS nvarchar(128)) AS Edition,
 
 function Select-Instance {
     $instances = @(Get-LocalExpressInstances)
-    if (-not $instances.Count) { throw 'No query-ready local SQL Server 2019/2022/2025 Express instance was found.' }
+    if (-not $instances.Count) { throw 'No query-ready local SQL Server 2017/2019/2022/2025 instance was found.' }
     if ($instances.Count -eq 1) {
         Write-Host "Found: $($instances[0].DisplayName) | $($instances[0].Edition) | $($instances[0].Version)"
         return $instances[0]
@@ -84,11 +86,12 @@ function Select-Instance {
 }
 
 function Show-BackupHistory {
-    param([string]$ServerInstance)
+    param([string]$ServerInstance,[int]$MaxAgeDays=7,[switch]$ReturnRisks)
     $query = @"
 SELECT d.name AS DatabaseName,
        d.state_desc AS State,
        b.backup_finish_date AS LastFullBackup,
+       DATEDIFF(hour,b.backup_finish_date,GETDATE()) AS AgeHours,
        b.is_copy_only AS IsCopyOnly,
        b.physical_device_name AS BackupPath
 FROM sys.databases AS d
@@ -99,7 +102,7 @@ OUTER APPLY (
     WHERE bs.database_name = d.name AND bs.type = 'D'
     ORDER BY bs.backup_finish_date DESC
 ) AS b
-WHERE d.database_id <> 2
+WHERE d.database_id <> 2 AND d.source_database_id IS NULL
 ORDER BY d.name;
 "@
     $table = Invoke-SqlQuery -ServerInstance $ServerInstance -Query $query
@@ -107,14 +110,41 @@ ORDER BY d.name;
         Write-Host 'No user databases.'
         return
     }
+    $risks=New-Object 'Collections.Generic.List[string]'
+    Write-Host "Backup history: $ServerInstance (full backups; warning threshold $MaxAgeDays days)"
     foreach ($row in $table.Rows) {
         $date = if ($row.LastFullBackup -eq [DBNull]::Value) { 'NEVER' } else { ([datetime]$row.LastFullBackup).ToString('yyyy-MM-dd HH:mm:ss') }
         $kind = if ($row.LastFullBackup -eq [DBNull]::Value) { '' } elseif ([bool]$row.IsCopyOnly) { 'COPY_ONLY' } else { 'FULL' }
         $path = if ($row.BackupPath -eq [DBNull]::Value) { '' } else { [string]$row.BackupPath }
-        Write-Host ("{0} | {1} | last full: {2} {3}" -f $row.DatabaseName, $row.State, $date, $kind)
+        $status=Get-BackupStatus $row.LastFullBackup $row.AgeHours $MaxAgeDays
+        $color=if($status-eq'MISSING'){'Red'}elseif($status-ne'RECENT HISTORY'){'Yellow'}else{'Green'}
+        Write-Host ("{0} | {1} | {2} | last full: {3} {4}" -f $row.DatabaseName,$row.State,$status,$date,$kind) -ForegroundColor $color
+        if($status-ne'RECENT HISTORY'){$risks.Add("$ServerInstance/$($row.DatabaseName): $status")}
         if ($path) { Write-Host "  $path" -ForegroundColor DarkGray }
     }
-    Write-Host 'The next step lets you optionally create new COPY_ONLY backups.' -ForegroundColor Yellow
+    Write-Host 'History is not proof that backup files still exist or can be restored. Verify recovery separately; external backups may not appear in msdb.' -ForegroundColor Yellow
+    if($ReturnRisks){return $risks.ToArray()}
+}
+
+function Get-BackupStatus {
+    param($LastFullBackup,$AgeHours,[int]$MaxAgeDays=7)
+    if($null-eq$LastFullBackup-or$LastFullBackup-eq[DBNull]::Value){return 'MISSING'}
+    if($null-eq$AgeHours-or$AgeHours-eq[DBNull]::Value-or[double]$AgeHours-lt0){return 'UNKNOWN AGE'}
+    if([double]$AgeHours-gt($MaxAgeDays*24)){return 'OLD'}
+    return 'RECENT HISTORY'
+}
+
+function Confirm-BackupReadiness {
+    param([object[]]$Instances,[int]$MaxAgeDays=7,[switch]$AcceptRisk,[switch]$Unattended)
+    $risks=@(foreach($item in $Instances){Show-BackupHistory $item.ServerInstance -MaxAgeDays $MaxAgeDays -ReturnRisks})
+    if($risks.Count){
+        Write-Warning ($risks -join '; ')
+        if(-not$AcceptRisk){
+            if($Unattended){throw 'Missing/old backup history. Explicit -AcceptBackupRisk is required; -Confirm alone does not accept backup risk.'}
+            if((Read-Host 'Type YES to accept missing/old backup risk and continue')-ine'YES'){throw 'Cancelled: backup risk was not accepted.'}
+        }
+        Write-Warning ('Backup risk explicitly accepted at '+[datetime]::UtcNow.ToString('o'))
+    }
 }
 
 function Quote-SqlIdentifier {
@@ -218,7 +248,7 @@ function Select-SqlUpdateStep {
 function Assert-SqlHistoryUpdate {
     param($Update,[int]$Major,[switch]$Prerequisite)
     $release=Get-SqlRelease $Major
-    $kb=switch($Major){15{'kb4518398'}16{'kb5023451'}17{'kb5005684'}}
+    $kb=switch($Major){14{'kb4047329'}15{'kb4518398'}16{'kb5023451'}17{'kb5005684'}}
     $url='https://support.microsoft.com/en-us/servicing/sql/sql-server-'+$release.Year+'/'+$kb+'-build-versions'
     try { $html=(Invoke-WebRequest $url -UseBasicParsing -UserAgent 'SqlExpressWindowsMaintenance/1.2.0' -TimeoutSec 60).Content }
     catch {

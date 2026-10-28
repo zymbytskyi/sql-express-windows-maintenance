@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.0.0 - 2026-10-28
+
+- Generalize to standalone SQL Server 2017/2019/2022/2025, all local Database Engine editions, including Standard Developer. Keep original directory/archive identifiers for in-place upgrade compatibility.
+- Default new runs to all local instances sequentially, preserving per-instance target builds and restart continuation; old journals retain their original scope. No major-version upgrade or intermediate CU installation.
+- Display full-backup history for system/user databases with missing/old/unknown-age warnings, configurable 7-day default, explicit interactive or unattended risk acceptance, and fresh review before SQL installation.
+- Optional system COPY_ONLY/CHECKSUM/VERIFYONLY backups use the instance default folder, with registry-read fallback for SQL 2017.
+- Preserve WSFC/FCI/AG, permission, signature/hash, uncertain-outcome and manual-reboot safeguards.
+- PowerShell 5.1 regression tests cover editions, four majors, backup decisions, multi-instance progression, reboot/resume and failure stopping. Live metadata checks passed for all majors. Setup and SQL backup operations were mocked; real multi-edition installation acceptance remains outstanding.
+
 ## 1.2.1 - 2026-10-28
 
 - Correct the unsupported assumption that CU+GDR requires its named CU to be installed separately. Select and install the latest package directly, once, without an intermediate CU or extra reboot.

@@ -1,5 +1,7 @@
 # Validation boundaries
 
+- 2.0.0 supports all local SQL 2017/2019/2022/2025 editions and multi-instance sequential runs. Regression and live metadata checks pass; backup/Setup integration was mocked. Perform real installation acceptance and restore/recovery checks in a non-production environment before production use.
+
 - 1.2.1 supersedes the incorrect 1.2.0 intermediate-CU policy. Single-package installation and reboot-to-verification tests passed with mocked Setup; live metadata checks passed for 2019/2022/2025. Real installation acceptance is still required before production rollout.
 
 - 1.2.0 (superseded): metadata checks passed, but CU-to-security mocks encoded an incorrect prerequisite assumption. Do not use that version for new maintenance runs.
