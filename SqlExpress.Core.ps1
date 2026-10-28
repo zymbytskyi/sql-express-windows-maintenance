@@ -23,6 +23,16 @@ function Invoke-SqlQuery {
     }
 }
 
+function Get-SqlRelease {
+    param([Parameter(Mandatory)][int]$Major)
+    switch ($Major) {
+        15 { [pscustomobject]@{Year=2019; Major=15; DownloadId=100809} }
+        16 { [pscustomobject]@{Year=2022; Major=16; DownloadId=105013} }
+        17 { [pscustomobject]@{Year=2025; Major=17; DownloadId=108788} }
+        default { throw "Unsupported SQL major version $Major. Supported Express releases: 2019, 2022, 2025." }
+    }
+}
+
 function Get-LocalExpressInstances {
     $registryPath = 'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL'
     if (-not (Test-Path -LiteralPath $registryPath)) { throw 'No local SQL Server Database Engine instance was found.' }
@@ -39,7 +49,8 @@ SELECT CAST(SERVERPROPERTY('Edition') AS nvarchar(128)) AS Edition,
        ISNULL(IS_SRVROLEMEMBER(N'sysadmin'), 0) AS IsSysadmin;
 "@
             $row = (Invoke-SqlQuery -ServerInstance $serverInstance -Query $query).Rows[0]
-            if (([version][string]$row.ProductVersion).Major -eq 16 -and [string]$row.Edition -match 'Express') {
+            Write-Host "$serverInstance | $($row.Edition) | $($row.ProductVersion)"
+            if (([version][string]$row.ProductVersion).Major -in @(15,16,17) -and [string]$row.Edition -match 'Express') {
                 $instances.Add([pscustomobject]@{
                     InstanceName = $instanceName
                     ServerInstance = $serverInstance
@@ -49,7 +60,7 @@ SELECT CAST(SERVERPROPERTY('Edition') AS nvarchar(128)) AS Edition,
                     Update = [string]$row.ProductUpdateLevel
                     IsSysadmin = [bool]$row.IsSysadmin
                 })
-            }
+            } else { Write-Warning "$serverInstance is unsupported: $($row.Edition), $($row.ProductVersion). Expected Express 2019, 2022 or 2025." }
         }
         catch {
             Write-Warning "Could not query local instance '$serverInstance': $($_.Exception.Message)"
@@ -60,7 +71,7 @@ SELECT CAST(SERVERPROPERTY('Edition') AS nvarchar(128)) AS Edition,
 
 function Select-Instance {
     $instances = @(Get-LocalExpressInstances)
-    if (-not $instances.Count) { throw 'No query-ready local SQL Server 2022 Express instance was found.' }
+    if (-not $instances.Count) { throw 'No query-ready local SQL Server 2019/2022/2025 Express instance was found.' }
     if ($instances.Count -eq 1) {
         Write-Host "Found: $($instances[0].DisplayName) | $($instances[0].Edition) | $($instances[0].Version)"
         return $instances[0]
@@ -117,26 +128,31 @@ function Quote-SqlLiteral {
 }
 
 function Get-LatestUpdate {
+    param([Parameter(Mandatory)][int]$Major)
+    $release = Get-SqlRelease $Major
+    $year = $release.Year
+    $downloadPage = 'https://www.microsoft.com/en-us/download/details.aspx?id=' + $release.DownloadId
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    $response = Invoke-WebRequest -Uri $downloadPage -UseBasicParsing
+    $response = Invoke-WebRequest -Uri $downloadPage -UseBasicParsing -TimeoutSec 60
     $html = [Net.WebUtility]::HtmlDecode([string]$response.Content)
     $plain = [regex]::Replace($html, '<script[\s\S]*?</script>|<style[\s\S]*?</style>|<[^>]+>', ' ')
     $plain = [regex]::Replace($plain, '\s+', ' ')
-    $fileMatch = [regex]::Match($plain, 'SQLServer2022-KB\d+-x64\.exe', 'IgnoreCase')
-    $versionMatch = [regex]::Match($plain, 'Version:\s*(16\.0\.\d+\.\d+)', 'IgnoreCase')
-    $cuMatch = [regex]::Match($plain, 'Cumulative Update Package\s+(\d+)\s+for SQL Server 2022\s+-\s+(KB\d+)', 'IgnoreCase')
+    $fileMatch = [regex]::Match($plain, "SQLServer$year-KB\d+-x64\.exe", 'IgnoreCase')
+    $versionMatch = [regex]::Match($plain, "Version:\s*($Major\.0\.\d+\.\d+)", 'IgnoreCase')
+    $cuMatch = [regex]::Match($plain, "Cumulative Update Package\s+(\d+)\s+for SQL Server $year\s+-\s+(KB\d+)", 'IgnoreCase')
     $urls = @($response.Links | ForEach-Object {
         if ($_.PSObject.Properties.Name -contains 'href') { [string]$_.href }
-    } | Where-Object { $_ -match '^https://download\.microsoft\.com/.*/SQLServer2022-KB\d+-x64\.exe(?:\?.*)?$' })
+    } | Where-Object { $_ -match "^https://download\.microsoft\.com/.*/SQLServer$year-KB\d+-x64\.exe(?:\?.*)?$" })
     if (-not $urls.Count) {
-        $urlMatch = [regex]::Match($html, 'https://download\.microsoft\.com/[^"''\s<>]+/SQLServer2022-KB\d+-x64\.exe(?:\?[^"''\s<>]*)?', 'IgnoreCase')
+        $urlMatch = [regex]::Match($html, ('https://download\.microsoft\.com/[^"''\s<>]+/SQLServer{0}-KB\d+-x64\.exe(?:\?[^"''\s<>]*)?' -f $year), 'IgnoreCase')
         if ($urlMatch.Success) { $urls = @($urlMatch.Value) }
     }
     if (-not $fileMatch.Success -or -not $versionMatch.Success -or -not $cuMatch.Success -or -not $urls.Count) {
-        throw 'Could not read the current SQL Server 2022 CU from Microsoft Download Center. Choose option 2 and use a downloaded Microsoft package.'
+        throw "Could not read the current SQL Server $year CU from Microsoft Download Center. Choose option 2 and use a reviewed Microsoft package."
     }
     $uri = [uri]$urls[0]
     if ($uri.Scheme -ne 'https' -or $uri.Host -ne 'download.microsoft.com') { throw "Microsoft Download Center returned an unexpected URL '$uri'." }
+    if ([IO.Path]::GetFileName($uri.AbsolutePath) -ine $fileMatch.Value -or $fileMatch.Value -notmatch [regex]::Escape($cuMatch.Groups[2].Value)) { throw 'Microsoft CU filename, KB and download URL disagree.' }
     [pscustomobject]@{
         Name = "CU$($cuMatch.Groups[1].Value)"
         KB = $cuMatch.Groups[2].Value.ToUpperInvariant()
@@ -157,7 +173,7 @@ function Get-LatestPackage {
     try {
         $downloaded = $false
         if (Get-Command Start-BitsTransfer -ErrorAction SilentlyContinue) {
-            try { Start-BitsTransfer -Source $Update.Uri -Destination $partial -DisplayName 'SQL Server 2022 CU'; $downloaded = $true }
+            try { Start-BitsTransfer -Source $Update.Uri -Destination $partial -DisplayName 'SQL Server CU'; $downloaded = $true }
             catch { Write-Warning 'BITS unavailable; retrying the Microsoft package over HTTPS.'; Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue }
         }
         if (-not $downloaded) {

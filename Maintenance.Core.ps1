@@ -35,32 +35,39 @@ function Wait-AutomaticSqlServices {
     throw ('SQL service startup timeout: '+($pending.Name-join', ')+'. Review Windows service events; saved continuation was retained.')
 }
 function Assert-SqlPackage {
-    param([string]$Path)
+    param([string]$Path,[Parameter(Mandatory)][int]$Major)
+    $release=Get-SqlRelease $Major
     if(-not(Test-Path -LiteralPath $Path -PathType Leaf)){throw 'SQL update file not found.'}
-    if([IO.Path]::GetFileName($Path)-notmatch'^SQLServer2022-KB\d+-x64\.exe$'){throw 'Expected an original SQL Server 2022 CU executable.'}
+    if([IO.Path]::GetFileName($Path)-notmatch('^SQLServer{0}-KB\d+-x64\.exe$'-f$release.Year)){throw "Expected original SQL Server $($release.Year) update media for this instance."}
     $sig=Get-AuthenticodeSignature -LiteralPath $Path
     if($sig.Status-ne'Valid'-or-not$sig.SignerCertificate-or$sig.SignerCertificate.Subject-notmatch'Microsoft Corporation'){throw 'Microsoft signature validation failed.'}
-    if(([version](Get-Item $Path).VersionInfo.ProductVersion).Major-ne16){throw 'SQL package is not version 2022.'}
+    if(([version](Get-Item $Path).VersionInfo.ProductVersion).Major-ne$Major){throw 'SQL package major version does not match the target instance.'}
 }
 function Invoke-QuietSqlSetup {
-    param([string]$Package,[string]$InstanceName)
+    param([string]$Package,[string]$InstanceName,[ValidateSet(15,16,17)][int]$Major=16)
     $arguments=@('/quiet','/hideconsole','/action=patch',"/instancename=$InstanceName",'/IAcceptSQLServerLicenseTerms')
     $process=Start-Process -FilePath $Package -ArgumentList $arguments -WindowStyle Hidden -PassThru
     try{
         $null=$process.Handle;$timer=[Diagnostics.Stopwatch]::StartNew()
-        while(-not$process.WaitForExit(5000)){Write-Host ("SQL Setup running; elapsed {0:n0}s. Logs: {1}\Microsoft SQL Server\160\Setup Bootstrap\Log"-f$timer.Elapsed.TotalSeconds,$env:ProgramFiles)}
+        while(-not$process.WaitForExit(5000)){Write-Host ("SQL Setup running; elapsed {0:n0}s. Logs: {1}\Microsoft SQL Server\{2}0\Setup Bootstrap\Log"-f$timer.Elapsed.TotalSeconds,$env:ProgramFiles,$Major)}
         $process.Refresh();$code=$process.ExitCode
         if($null-eq$code-or$code-notin@(0,3010)){throw "SQL Setup exit $code. Review Setup logs; no automatic retry."}
         return [int]$code
     }finally{$process.Dispose()}
 }
 function Assert-LatestExpressCu {
-    param($Update)
-    $url='https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2022/build-versions'
-    $html=(Invoke-WebRequest $url -UseBasicParsing -TimeoutSec 60).Content
+    param($Update,[Parameter(Mandatory)][int]$Major)
+    $release=Get-SqlRelease $Major
+    $url='https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-'+$release.Year+'/build-versions'
+    try { $html=(Invoke-WebRequest $url -UseBasicParsing -TimeoutSec 60).Content }
+    catch {
+        $kb=switch($Major){15{'kb4518398'}16{'kb5023451'}17{'kb5005684'}}
+        $fallback='https://support.microsoft.com/en-us/servicing/sql/sql-server-'+$release.Year+'/'+$kb+'-build-versions'
+        $html=(Invoke-WebRequest $fallback -UseBasicParsing -TimeoutSec 60).Content
+    }
     foreach($row in [regex]::Matches($html,'<tr[^>]*>[\s\S]*?</tr>','IgnoreCase')){
         $text=[regex]::Replace([Net.WebUtility]::HtmlDecode([regex]::Replace($row.Value,'<[^>]+>',' ')),'\s+',' ').Trim()
-        $match=[regex]::Match($text,'^CU\d+\s+\(Latest\)\s+(16\.0\.\d+\.\d+)\b.*?\b(KB\d+)\b','IgnoreCase')
+        $match=[regex]::Match($text,"^CU\d+\s+\(Latest\)\s+($Major\.0\.\d+\.\d+)\b.*?\b(KB\d+)\b",'IgnoreCase')
         if($match.Success){
             if([version]$Update.Version-ne[version]$match.Groups[1].Value-or$Update.KB-ne$match.Groups[2].Value){throw 'Microsoft sources disagree on the latest CU. Use reviewed local media or retry later.'}
             return

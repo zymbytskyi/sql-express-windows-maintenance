@@ -17,7 +17,6 @@ $RunRoot=$runtimeTarget
 . (Join-Path $PSScriptRoot 'SqlExpress.Core.ps1')
 . (Join-Path $PSScriptRoot 'WindowsUpdate.Core.ps1')
 . (Join-Path $PSScriptRoot 'Maintenance.Core.ps1')
-$downloadPage='https://www.microsoft.com/en-us/download/details.aspx?id=105013'
 $packageRoot=Join-Path $PSScriptRoot 'Packages'
 $statePath=Join-Path $RunRoot 'current.json'
 function Get-BootStamp {(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o')}
@@ -40,7 +39,7 @@ function Assert-ExpressHost {
     $map=Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL'
     $registered=@($map.PSObject.Properties|Where-Object{$_.Name-notmatch'^PS'})
     $instances=@(Get-LocalExpressInstances)
-    if(-not$instances.Count-or$instances.Count-ne$registered.Count){throw 'Every local SQL instance must be query-ready SQL Server 2022 Express. Mixed/unknown hosts are blocked.'}
+    if(-not$instances.Count-or$instances.Count-ne$registered.Count){throw 'Every local SQL instance must be query-ready SQL Server 2019, 2022 or 2025 Express. See the per-instance diagnostics above; unsupported editions and inaccessible instances remain blocked.'}
     foreach($instance in $instances){
         if(-not$instance.IsSysadmin){throw "SQL sysadmin required: $($instance.DisplayName)"}
         $q="SELECT CAST(SERVERPROPERTY('IsClustered') AS int) C, CAST(SERVERPROPERTY('IsHadrEnabled') AS int) H, (SELECT COUNT(*) FROM sys.availability_replicas) R;"
@@ -148,11 +147,14 @@ try{
     }
     if($state.Stage-eq'Sql'){
         $instance=@(Assert-ExpressHost|Where-Object InstanceName -eq $state.Instance)[0]
+        if(-not$instance){throw 'Saved SQL instance is no longer available.'}
+        $major=([version]$instance.Version).Major
+        $latest=$null
         $package=$LocalPackagePath
         if(-not$package){
             $source=if($Confirm){'1'}else{Read-Host 'SQL update: 1 latest CU (default), 2 local EXE'}
             if(-not$source-or$source-eq'1'){
-                $latest=Get-LatestUpdate;Assert-LatestExpressCu $latest
+                $latest=Get-LatestUpdate -Major $major;Assert-LatestExpressCu $latest -Major $major
                 Write-Host "Latest SQL CU: $($latest.Name) $($latest.KB) $($latest.Version)"
                 $state.TargetVersion=$latest.Version
                 if([version]$instance.Version-ge[version]$latest.Version){Write-Host 'SQL is already current; no installation.';$state.Stage='Verify';Save-PatchState $state}
@@ -160,15 +162,16 @@ try{
             }elseif($source-eq'2'){$package=(Read-Host 'Full path to original Microsoft EXE').Trim('"')}else{throw 'Select 1 or 2.'}
         }
         if($state.Stage-eq'Sql'){
-            Assert-SqlPackage $package
+            Assert-SqlPackage $package -Major $major
             $version=(Get-Item $package).VersionInfo.ProductVersion
+            if($latest-and[version]$version-ne[version]$latest.Version){throw 'Downloaded package version differs from the approved Microsoft CU metadata.'}
             $state.TargetVersion=[string]$version
             if([version]$instance.Version-ge[version]$version){Write-Host 'Selected build already installed; no downgrade.';$state.Stage='Verify';Save-PatchState $state}
             else{
                 Write-Host "$($instance.DisplayName): $($instance.Version) -> $version"
                 if(-not$Confirm-and-not(Test-Yes (Read-Host 'Accept SQL license terms and install? [y/N]'))){return}
                 $state.PackagePath=[IO.Path]::GetFullPath($package);$state.PackageHash=(Get-FileHash $package).Hash;$state.Stage='InstallingSql';Save-PatchState $state
-                $code=Invoke-QuietSqlSetup $package $instance.InstanceName
+                $code=Invoke-QuietSqlSetup $package $instance.InstanceName -Major $major
                 $state.RestartRequired=($code-eq3010);$state.Stage='Verify';Save-PatchState $state
                 if($code-eq3010-or(Test-PendingRestart)){Request-PatchRestart $state Verify;return}
             }

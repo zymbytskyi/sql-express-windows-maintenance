@@ -1,6 +1,6 @@
 # Security and scope
 
-Run locally in elevated Windows PowerShell 5.1 using your existing Windows account. Local administrator and SQL sysadmin are required. Only standalone Windows Server hosts containing query-ready SQL Server 2022 Express instances are in scope. No remote patching, clusters, AG, FCI, drivers or OS feature upgrades.
+Run locally in elevated Windows PowerShell 5.1 using your existing Windows account. Local administrator and SQL sysadmin are required. Only standalone Windows Server hosts containing query-ready SQL Server 2019, 2022 or 2025 Express instances are in scope. Mixed supported Express versions are allowed, but other editions and inaccessible instances block the entire host. No remote patching, clusters, AG, FCI, drivers or OS feature upgrades.
 
 Windows Update uses the existing WUA source and policies. It never registers Microsoft Update, bypasses WSUS, disables Defender, adds exclusions, or modifies Windows Update reboot policy. Existing corporate automatic restart policies still apply; use an approved maintenance window.
 

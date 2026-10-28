@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.0 - 2026-10-28
+
+- Support standalone Express 2019/2022/2025, including mixed supported versions on one host, with per-instance diagnostics.
+- Route CU discovery, independent Microsoft history validation, package filename/product-major validation and Setup log location by the selected instance version.
+- Reject wrong-major media and downloaded package builds that disagree with selected CU metadata; retain all existing standalone, signature, sysadmin and restart gates.
+- Add Microsoft localized build-history fallback for failing Learn redirects.
+- Add PowerShell 5.1 multi-version regression and live metadata tests. No fresh SQL 2019/2025 installation acceptance is claimed.
+
 ## 1.0.0
 
 - Separate local SQL Server 2022 Express + Windows Server maintenance package; original Express-only tool unchanged.
