@@ -9,7 +9,7 @@ In an elevated Windows PowerShell console, install directly from GitHub:
 ```powershell
 [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
 $p=Join-Path $env:TEMP 'Install-SqlExpressWindowsPatch.ps1'
-Invoke-WebRequest 'https://raw.githubusercontent.com/zymbytskyi/sql-express-windows-maintenance/v1.2.0/Install-FromGitHub.ps1' -UseBasicParsing -OutFile $p
+Invoke-WebRequest 'https://raw.githubusercontent.com/zymbytskyi/sql-express-windows-maintenance/v1.2.1/Install-FromGitHub.ps1' -UseBasicParsing -OutFile $p
 if((Get-FileHash $p).Hash-ne'4F2D117DB6703135D882645BAA449D414E85A4811E4E91F5EE68712C80ABBC7C'){throw 'Bootstrap hash mismatch'}
 & $p
 ```
@@ -49,9 +49,17 @@ Use a maintenance window and a tested OS recovery plan. Old database backups are
 
 See SECURITY.md for recovery and policy limits. Latest SQL update metadata is cross-checked against two Microsoft build histories; inconsistent or unavailable sources block automatic selection rather than silently choosing an older CU.
 
-Automatic selection chooses the highest released CU-branch build for the installed major version, including CU+GDR security updates. It displays the KB, build and release date. RTM/GDR-only packages are not mixed into the CU branch; this policy may move an RTM/GDR-only instance to the CU branch after installation approval. If the required base CU is missing, it is installed first and verified before the security update. A required restart saves continuation at the SQL phase; relaunch the same script after restarting. The tool never downgrades or changes SQL major versions. Microsoft Catalog provides the matching x64 EXE and SHA-256; both newly downloaded and cached files are checked before signature and product-version validation. Catalog filenames are normalized to SQLServerYEAR-KBnumber-x64.exe without altering file contents. Reviewed local media remains an explicit manual override, not a claim of latest status. Standard/Developer editions, AG and FCI remain unsupported.
+Automatic selection chooses the highest released CU-branch build for the installed major version, including CU+GDR security updates. It displays the KB, build and release date. RTM/GDR-only packages are not mixed into the CU branch; this policy may move an RTM/GDR-only instance to the CU branch after installation approval. It installs the selected package directly, without inferring an intermediate CU dependency from the package name. A required restart saves continuation to health verification; relaunch the same script after restarting. The tool never downgrades or changes SQL major versions. Microsoft Catalog provides the matching x64 EXE and SHA-256; both newly downloaded and cached files are checked before signature and product-version validation. Catalog filenames are normalized to SQLServerYEAR-KBnumber-x64.exe without altering file contents. Reviewed local media remains an explicit manual override, not a claim of latest status. Standard/Developer editions, AG and FCI remain unsupported.
+
+## 1.2.1 correction and validation (2026-10-28)
+
+Use 1.2.1 instead of 1.2.0. The intermediate-CU rule in 1.2.0 was incorrect. Microsoft's prerequisites for [SQL 2019 KB5128494](https://support.microsoft.com/en-us/help/5128494) and [SQL 2022 KB5126934](https://support.microsoft.com/en-us/help/5126934) permit the corresponding SQL release or previous CUs; the CU named in CU+GDR is not a required separate installation. Review the selected KB's prerequisites and known issues for your environment; SQL Setup remains authoritative for applicability and failures are not retried with an invented prerequisite.
+
+PowerShell 5.1 tests verify one direct Setup invocation, reboot continuation to verification, no reinstall/downgrade, and compatibility with saved 1.2.0 restart journals. Live Microsoft history/Catalog discovery passed for Express 2019/2022/2025. Installations were mocked: this release has not received a real SQL/security installation acceptance test. If upgrading after 1.2.0 installed a base CU, preserve Runs and resume after any requested restart; the SQL phase now selects the latest package directly. Unknown/failed installer outcomes still require manual review.
 
 ## 1.2.0 validation (2026-10-28)
+
+Historical record only: superseded by 1.2.1. These tests encoded the incorrect intermediate-CU assumption and did not establish that it was required.
 
 PowerShell 5.1 tests cover CU/security ordering, prerequisite CU installation followed by security installation, reboot continuation after the prerequisite, newer CU supersedence, branch separation, missing metadata, and Catalog host/hash/ambiguity rejection. SQL Setup was mocked, not run. Live Microsoft histories and Catalog metadata resolved 2019 CU32+GDR (15.0.4500.2), 2022 CU27+GDR (16.0.4305.5), and 2025 CU10 (17.0.5035.5). Builds are discovered at runtime, not hard-coded. No real security-update installation acceptance was performed for this release.
 

@@ -145,7 +145,7 @@ try{
         }
         if($state.Stage-eq'WindowsScan'){Write-Host 'Three batches completed. Run again to rescan dependencies before continuing.';return}
     }
-    for($sqlPass=0;$sqlPass-lt2-and$state.Stage-eq'Sql';$sqlPass++){
+    for($sqlPass=0;$sqlPass-lt1-and$state.Stage-eq'Sql';$sqlPass++){
         $instance=@(Assert-ExpressHost|Where-Object InstanceName -eq $state.Instance)[0]
         if(-not$instance){throw 'Saved SQL instance is no longer available.'}
         $major=([version]$instance.Version).Major
@@ -156,7 +156,6 @@ try{
             if(-not$source-or$source-eq'1'){
                 $latest=Get-LatestUpdate -Major $major -CurrentVersion $instance.Version
                 Write-Host "Latest SQL target: $($latest.FinalName) | $($latest.FinalKB) | $($latest.FinalVersion) | released $($latest.FinalReleased)"
-                if($latest.IsPrerequisite){Write-Host "Required first step: $($latest.Name) $($latest.KB) $($latest.Version). Security update follows after this CU; resume after any required restart." -ForegroundColor Yellow}
                 $state.TargetVersion=$latest.Version
                 if([version]$instance.Version-ge[version]$latest.Version){Write-Host 'SQL is already current; no installation.';$state.Stage='Verify';Save-PatchState $state}
                 else{$package=Get-LatestPackage $latest}
@@ -165,7 +164,7 @@ try{
         if($state.Stage-eq'Sql'){
             Assert-SqlPackage $package -Major $major
             $version=(Get-Item $package).VersionInfo.ProductVersion
-            if($latest-and[version]$version-ne[version]$latest.Version){throw 'Downloaded package version differs from the approved Microsoft CU metadata.'}
+            if($latest-and[version]$version-ne[version]$latest.Version){throw 'Downloaded package version differs from the approved Microsoft update metadata.'}
             $state.TargetVersion=[string]$version
             if([version]$instance.Version-ge[version]$version){Write-Host 'Selected build already installed; no downgrade.';$state.Stage='Verify';Save-PatchState $state}
             else{
@@ -173,14 +172,9 @@ try{
                 if(-not$Confirm-and-not(Test-Yes (Read-Host 'Accept SQL license terms and install? [y/N]'))){return}
                 $state.PackagePath=[IO.Path]::GetFullPath($package);$state.PackageHash=(Get-FileHash $package).Hash;$state.Stage='InstallingSql';Save-PatchState $state
                 $code=Invoke-QuietSqlSetup $package $instance.InstanceName -Major $major
-                $next=if($latest-and$latest.IsPrerequisite){'Sql'}else{'Verify'}
+                $next='Verify'
                 $state.RestartRequired=($code-eq3010);$state.Stage=$next;Save-PatchState $state
                 if($code-eq3010-or(Test-PendingRestart)){Request-PatchRestart $state $next;return}
-                if($next-eq'Sql'){
-                    Wait-AutomaticSqlServices
-                    $fresh=@(Assert-ExpressHost|Where-Object InstanceName -eq $state.Instance)
-                    if($fresh.Count-ne1-or[version]$fresh[0].Version-lt[version]$version){throw 'Prerequisite CU build verification failed; security installation was not started.'}
-                }
             }
         }
     }

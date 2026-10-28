@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.1 - 2026-10-28
+
+- Correct the unsupported assumption that CU+GDR requires its named CU to be installed separately. Select and install the latest package directly, once, without an intermediate CU or extra reboot.
+- Continue to final health verification after a successful installation/restart. Preserve support for existing 1.2.0 SQL-phase restart journals and uncertain-outcome safeguards.
+- Regression tests cover direct installation, reboot continuation, already-current/newer builds and journal compatibility. Live Microsoft metadata checks passed for all supported majors; real SQL installation was not performed.
+- Document Microsoft prerequisites and explicitly supersede the incorrect 1.2.0 guidance.
+
 ## 1.2.0 - 2026-10-28
 
 - Automatic selection now targets the latest CU-branch build, including security/CU+GDR releases, rather than the latest CU alone; display KB, build and release date.

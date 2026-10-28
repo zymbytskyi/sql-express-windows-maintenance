@@ -8,11 +8,8 @@ if($Live){
     foreach($major in @(15,16,17)){
         $u=Get-LatestUpdate $major ([version]"$major.0.1000.1")
         Write-Output "PASS live RTM plan: $major -> $($u.Name) -> $($u.FinalName) $($u.FinalKB) $($u.FinalVersion) $($u.FinalReleased)"
-        if($u.IsPrerequisite){
-            $s=Get-LatestUpdate $major ([version]$u.Version)
-            Assert (-not$s.IsPrerequisite-and$s.Version-eq$u.FinalVersion) 'Security continuation did not reach the target'
-            Write-Output "PASS live security media: $($s.KB) $($s.Version), Catalog SHA-256 $($s.Sha256)"
-        }
+        Assert (-not$u.IsPrerequisite-and$u.Version-eq$u.FinalVersion) 'Unexpected intermediate CU'
+        Write-Output "PASS direct latest media: $($u.KB) $($u.Version), Catalog SHA-256 $($u.Sha256)"
     }
     return
 }
@@ -25,7 +22,7 @@ $html=@'
 $history=@(Convert-SqlHistory $html 15)
 Assert ($history.Count-eq2) 'RTM GDR or another major leaked into CU branch'
 $p=Select-SqlUpdateStep $history ([version]'15.0.1000.1')
-Assert ($p.IsPrerequisite-and$p.Step.Name-eq'CU32'-and$p.Target.Name-eq'CU32 + GDR') 'Missing base CU prerequisite'
+Assert (-not$p.IsPrerequisite-and$p.Step.Name-eq'CU32 + GDR') 'RTM incorrectly requires an intermediate CU'
 foreach($v in @('15.0.4430.1','15.0.4490.1','15.0.4500.2','15.0.9999.1')){
     $p=Select-SqlUpdateStep $history ([version]$v)
     Assert (-not$p.IsPrerequisite-and$p.Step.Version-eq'15.0.4500.2') 'Wrong security selection or attempted base downgrade'
@@ -33,7 +30,8 @@ foreach($v in @('15.0.4430.1','15.0.4490.1','15.0.4500.2','15.0.9999.1')){
 $newCu=[pscustomobject]@{Name='CU33';Version='15.0.4600.1';KB='KB9999999';Released='2026-10-22'}
 $p=Select-SqlUpdateStep @($history+$newCu) ([version]'15.0.4430.1')
 Assert ($p.Step.Name-eq'CU33'-and-not$p.IsPrerequisite) 'Newer CU did not supersede older security update'
-$blocked=$false;try{Select-SqlUpdateStep @($history[0]) ([version]'15.0.1000.1')}catch{$blocked=$true};Assert $blocked 'Missing prerequisite accepted'
+$p=Select-SqlUpdateStep @($history[0]) ([version]'15.0.1000.1')
+Assert ($p.Step.Version-eq'15.0.4500.2'-and-not$p.IsPrerequisite) 'Historical CU unnecessarily required'
 $blocked=$false;try{Select-SqlUpdateStep @() ([version]'15.0.1000.1')}catch{$blocked=$true};Assert $blocked 'Empty metadata accepted'
 
 $script:badHost=$false;$script:missingDigest=$false;$script:ambiguous=$false
@@ -58,7 +56,7 @@ foreach($case in @('badHost','missingDigest','ambiguous')){
     $blocked=$false;try{Get-CatalogSqlMedia $history[0] 15}catch{$blocked=$true};Assert $blocked "Unsafe Catalog $case accepted"
     Set-Variable -Name $case -Scope Script -Value $false
 }
-Write-Output 'PASS: CU/security selection, prerequisite planning, newer CU supersedence, no RTM GDR/major mixing, missing metadata, Catalog host/hash/ambiguity gates.'
+Write-Output 'PASS: direct CU/security selection, no intermediate CU, newer CU supersedence, no RTM GDR/major mixing, missing metadata, Catalog host/hash/ambiguity gates.'
 
 # Execute the actual SQL orchestration loop with mocked installers, never Setup.
 $t=$null;$e=$null;$ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot Start-ServerMaintenance.ps1),[ref]$t,[ref]$e)
@@ -85,7 +83,18 @@ foreach($code in @(0,3010)){
     $script:installed='15.0.1000.1';$script:installs=0;$script:setupCode=$code
     $state=[pscustomobject]@{Stage='Sql';Instance='TEST';TargetVersion='';PackagePath='';PackageHash='';RestartRequired=$false;NextStage=''}
     & ([scriptblock]::Create($loop.Extent.Text))
-    if($code-eq0){Assert ($script:installs-eq2-and$state.Stage-eq'Verify'-and$script:installed-eq'15.0.4500.2') 'CU + security did not complete sequentially'}
-    else{Assert ($script:installs-eq1-and$state.Stage-eq'AwaitingRestart'-and$state.NextStage-eq'Sql') 'Prerequisite restart incorrectly skipped security continuation'}
+    if($code-eq0){Assert ($script:installs-eq1-and$state.Stage-eq'Verify'-and$script:installed-eq'15.0.4500.2') 'Expected exactly one direct security installation'}
+    else{Assert ($script:installs-eq1-and$state.Stage-eq'AwaitingRestart'-and$state.NextStage-eq'Verify') 'Restart must continue to verification, not another install'}
 }
-Write-Output 'PASS: actual SQL loop installs CU then security, or persists Sql continuation when prerequisite requests reboot (mocked Setup).'
+foreach($v in @('15.0.4500.2','15.0.9999.1')){
+    $script:installed=$v;$script:installs=0;$script:setupCode=0
+    $state.Stage='Sql'
+    & ([scriptblock]::Create($loop.Extent.Text))
+    Assert ($script:installs-eq0-and$state.Stage-eq'Verify') 'Already current/newer build was reinstalled or downgraded'
+}
+. (Join-Path $PSScriptRoot Maintenance.Core.ps1)
+$old=[pscustomobject]@{Schema=1;MachineId='TEST';Mode='All';Stage='AwaitingRestart';BootBefore='BOOT1';NextStage='Sql'}
+Assert ((Resolve-SavedStage $old TEST BOOT2 $false)-eq'Sql') 'Old v1.2.0 restart journal cannot resume latest selection'
+$old.NextStage='Verify'
+Assert ((Resolve-SavedStage $old TEST BOOT2 $false)-eq'Verify') 'New restart journal cannot resume health verification'
+Write-Output 'PASS: one direct Setup invocation, reboot to verification, no reinstall/downgrade, and old/new restart journal compatibility (mocked Setup).'

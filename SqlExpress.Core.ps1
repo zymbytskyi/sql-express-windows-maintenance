@@ -210,14 +210,9 @@ function Select-SqlUpdateStep {
     $ordered=@($History|Sort-Object @{Expression={[version]$_.Version};Descending=$true})
     if(-not$ordered.Count){throw 'Microsoft history contains no supported CU/security builds. No older CU fallback is allowed.'}
     $target=$ordered[0]
-    $step=$target
-    if($target.Name-match'^(CU\d+)\s*\+\s*GDR$'){
-        $baseName=$matches[1]
-        $base=@($History|Where-Object Name -eq $baseName)
-        if($base.Count-ne1){throw 'Security update prerequisite CU is ambiguous or missing.'}
-        if($CurrentVersion-lt[version]$base[0].Version){$step=$base[0]}
-    }
-    [pscustomobject]@{Step=$step;Target=$target;IsPrerequisite=($step.Version-ne$target.Version)}
+    # CU+GDR is a package identity, not a dependency on a separately installed CU.
+    # Microsoft KB5128494 / KB5126934 allow the corresponding SQL release or earlier CUs.
+    [pscustomobject]@{Step=$target;Target=$target;IsPrerequisite=$false}
 }
 
 function Assert-SqlHistoryUpdate {
@@ -278,7 +273,6 @@ function Get-LatestUpdate {
     $html=(Invoke-WebRequest $url -UseBasicParsing -UserAgent 'SqlExpressWindowsMaintenance/1.2.0' -TimeoutSec 60).Content
     $plan=Select-SqlUpdateStep @(Convert-SqlHistory $html $Major) $CurrentVersion
     Assert-SqlHistoryUpdate $plan.Target $Major
-    if($plan.IsPrerequisite){Assert-SqlHistoryUpdate $plan.Step $Major -Prerequisite}
     $media=Get-CatalogSqlMedia $plan.Step $Major
     [pscustomobject]@{Name=$plan.Step.Name;KB=$plan.Step.KB;Version=$plan.Step.Version;Released=$plan.Step.Released;Uri=$media.Uri;FileName=$media.FileName;Sha256=$media.Sha256;IsPrerequisite=$plan.IsPrerequisite;FinalVersion=$plan.Target.Version;FinalName=$plan.Target.Name;FinalKB=$plan.Target.KB;FinalReleased=$plan.Target.Released}
 }

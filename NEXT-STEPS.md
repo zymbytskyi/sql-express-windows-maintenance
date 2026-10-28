@@ -1,6 +1,8 @@
 # Validation boundaries
 
-- 1.2.0: latest CU/security discovery and Catalog media/hash metadata passed live checks for all three supported SQL majors. CU-to-security orchestration and restart continuation passed with mocked installers. Real installation acceptance remains required before production rollout.
+- 1.2.1 supersedes the incorrect 1.2.0 intermediate-CU policy. Single-package installation and reboot-to-verification tests passed with mocked Setup; live metadata checks passed for 2019/2022/2025. Real installation acceptance is still required before production rollout.
+
+- 1.2.0 (superseded): metadata checks passed, but CU-to-security mocks encoded an incorrect prerequisite assumption. Do not use that version for new maintenance runs.
 
 - 1.1.0: Express 2019/2022/2025 regression and live Microsoft metadata checks passed in Windows PowerShell 5.1. Real installation acceptance for 2019 and 2025 remains to be performed before production rollout; this release does not claim it.
 
