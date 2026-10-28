@@ -7,7 +7,7 @@ Set-StrictMode -Version 2
 function Assert($Condition,$Message){if(-not$Condition){throw $Message}}
 if($Live){
     foreach($major in @(15,16,17)){
-        $update=Get-LatestUpdate -Major $major
+        $update=Get-LatestCu -Major $major
         Assert-LatestExpressCu $update -Major $major
         Write-Output "PASS live Microsoft metadata: $major $($update.Name) $($update.KB) $($update.Version)"
     }
@@ -27,7 +27,7 @@ function Get-AuthenticodeSignature {param($LiteralPath);[pscustomobject]@{Status
 function Get-Item {param($Path);[pscustomobject]@{VersionInfo=[pscustomobject]@{ProductVersion=$script:mediaVersion}}}
 foreach($script:major in @(15,16,17)){
     $script:release=Get-SqlRelease $major
-    $update=Get-LatestUpdate -Major $major
+    $update=Get-LatestCu -Major $major
     Assert-LatestExpressCu $update -Major $major
     $script:mediaVersion="$major.0.9999.1";$script:signature='Valid'
     Assert-SqlPackage $update.FileName -Major $major

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0 - 2026-10-28
+
+- Automatic selection now targets the latest CU-branch build, including security/CU+GDR releases, rather than the latest CU alone; display KB, build and release date.
+- Verify the newest target against independent Microsoft build history and retrieve matching x64 media plus SHA-256 from Microsoft Update Catalog. Never silently fall back to an older update.
+- Install and verify a required base CU before the security update; preserve SQL continuation if a prerequisite requires restart. No forced or automatic reboot was added.
+- Check cached/downloaded media against Catalog SHA-256 in addition to existing Microsoft signature and target-major checks.
+- PowerShell 5.1 selection/orchestration regression tests and live Microsoft metadata checks passed; real SQL/security installation was not performed in this release.
+
 ## 1.1.0 - 2026-10-28
 
 - Support standalone Express 2019/2022/2025, including mixed supported versions on one host, with per-instance diagnostics.

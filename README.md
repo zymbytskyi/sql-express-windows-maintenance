@@ -9,7 +9,7 @@ In an elevated Windows PowerShell console, install directly from GitHub:
 ```powershell
 [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
 $p=Join-Path $env:TEMP 'Install-SqlExpressWindowsPatch.ps1'
-Invoke-WebRequest 'https://raw.githubusercontent.com/zymbytskyi/sql-express-windows-maintenance/v1.1.0/Install-FromGitHub.ps1' -UseBasicParsing -OutFile $p
+Invoke-WebRequest 'https://raw.githubusercontent.com/zymbytskyi/sql-express-windows-maintenance/v1.2.0/Install-FromGitHub.ps1' -UseBasicParsing -OutFile $p
 if((Get-FileHash $p).Hash-ne'4F2D117DB6703135D882645BAA449D414E85A4811E4E91F5EE68712C80ABBC7C'){throw 'Bootstrap hash mismatch'}
 & $p
 ```
@@ -47,9 +47,13 @@ Current-account automation can use `-Mode All -Confirm -BackupChoice 1 -Instance
 
 Use a maintenance window and a tested OS recovery plan. Old database backups are informational, not an age-based blocker. Disk preflight reserves 5 GiB plus the reported maximum undownloaded package size; this conservative check is not a guarantee of sufficient Windows servicing space. No automatic cleanup or uninstall is performed.
 
-See SECURITY.md for recovery and policy limits. Latest SQL CU metadata is cross-checked against Microsoft build history; inconsistent sources block automatic selection.
+See SECURITY.md for recovery and policy limits. Latest SQL update metadata is cross-checked against two Microsoft build histories; inconsistent or unavailable sources block automatic selection rather than silently choosing an older CU.
 
-Latest CU means the latest cumulative update, not necessarily a newer CU+GDR security update. In particular, SQL 2019 CU32 is its final CU. Use reviewed local Microsoft media for later security updates; the tool never downgrades or changes SQL major versions. A renamed or wrong-major executable is rejected. This release still does not support Standard/Developer editions, AG or FCI.
+Automatic selection chooses the highest released CU-branch build for the installed major version, including CU+GDR security updates. It displays the KB, build and release date. RTM/GDR-only packages are not mixed into the CU branch; this policy may move an RTM/GDR-only instance to the CU branch after installation approval. If the required base CU is missing, it is installed first and verified before the security update. A required restart saves continuation at the SQL phase; relaunch the same script after restarting. The tool never downgrades or changes SQL major versions. Microsoft Catalog provides the matching x64 EXE and SHA-256; both newly downloaded and cached files are checked before signature and product-version validation. Catalog filenames are normalized to SQLServerYEAR-KBnumber-x64.exe without altering file contents. Reviewed local media remains an explicit manual override, not a claim of latest status. Standard/Developer editions, AG and FCI remain unsupported.
+
+## 1.2.0 validation (2026-10-28)
+
+PowerShell 5.1 tests cover CU/security ordering, prerequisite CU installation followed by security installation, reboot continuation after the prerequisite, newer CU supersedence, branch separation, missing metadata, and Catalog host/hash/ambiguity rejection. SQL Setup was mocked, not run. Live Microsoft histories and Catalog metadata resolved 2019 CU32+GDR (15.0.4500.2), 2022 CU27+GDR (16.0.4305.5), and 2025 CU10 (17.0.5035.5). Builds are discovered at runtime, not hard-coded. No real security-update installation acceptance was performed for this release.
 
 ## 1.1.0 validation (2026-10-28)
 

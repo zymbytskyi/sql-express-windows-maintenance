@@ -1,5 +1,7 @@
 # Validation boundaries
 
+- 1.2.0: latest CU/security discovery and Catalog media/hash metadata passed live checks for all three supported SQL majors. CU-to-security orchestration and restart continuation passed with mocked installers. Real installation acceptance remains required before production rollout.
+
 - 1.1.0: Express 2019/2022/2025 regression and live Microsoft metadata checks passed in Windows PowerShell 5.1. Real installation acceptance for 2019 and 2025 remains to be performed before production rollout; this release does not claim it.
 
 - Windows Server 2025 combined acceptance completed on 2026-09-18: five Windows updates, verified system backups, restart/continuation, clean rescan and final SQL health. SQL Express CU27 was already installed and was not reinstalled.

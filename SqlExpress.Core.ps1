@@ -127,7 +127,7 @@ function Quote-SqlLiteral {
     return "N'" + $Value.Replace("'", "''") + "'"
 }
 
-function Get-LatestUpdate {
+function Get-LatestCu {
     param([Parameter(Mandatory)][int]$Major)
     $release = Get-SqlRelease $Major
     $year = $release.Year
@@ -166,19 +166,23 @@ function Get-LatestPackage {
     param($Update)
     if (-not (Test-Path -LiteralPath $packageRoot)) { New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null }
     $destination = Join-Path $packageRoot $Update.FileName
-    if (Test-Path -LiteralPath $destination -PathType Leaf) { return $destination }
+    if (Test-Path -LiteralPath $destination -PathType Leaf) {
+        if($Update.PSObject.Properties.Name -contains 'Sha256' -and (Get-FileHash $destination -Algorithm SHA256).Hash -ne $Update.Sha256){throw 'Cached SQL package SHA-256 mismatch. Review/remove the corrupt cached file before retrying.'}
+        return $destination
+    }
     $partial = $destination + '.download'
     Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
     Write-Host "Downloading $($Update.Name) $($Update.KB) from Microsoft..."
     try {
         $downloaded = $false
         if (Get-Command Start-BitsTransfer -ErrorAction SilentlyContinue) {
-            try { Start-BitsTransfer -Source $Update.Uri -Destination $partial -DisplayName 'SQL Server CU'; $downloaded = $true }
+            try { Start-BitsTransfer -Source $Update.Uri -Destination $partial -DisplayName 'SQL Server update'; $downloaded = $true }
             catch { Write-Warning 'BITS unavailable; retrying the Microsoft package over HTTPS.'; Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue }
         }
         if (-not $downloaded) {
             Invoke-WebRequest -Uri $Update.Uri -OutFile $partial -UseBasicParsing
         }
+        if($Update.PSObject.Properties.Name -contains 'Sha256' -and (Get-FileHash $partial -Algorithm SHA256).Hash -ne $Update.Sha256){throw 'Downloaded SQL package SHA-256 does not match Microsoft Catalog.'}
         Move-Item -LiteralPath $partial -Destination $destination
         return $destination
     }
@@ -186,6 +190,97 @@ function Get-LatestPackage {
         Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
         throw
     }
+}
+
+function Convert-SqlHistory {
+    param([string]$Html,[int]$Major)
+    foreach($row in [regex]::Matches($Html,'<tr[^>]*>[\s\S]*?</tr>','IgnoreCase')){
+        $cells=@([regex]::Matches($row.Value,'<td[^>]*>([\s\S]*?)</td>','IgnoreCase')|ForEach-Object{
+            [regex]::Replace([Net.WebUtility]::HtmlDecode([regex]::Replace($_.Groups[1].Value,'<[^>]+>',' ')),'\s+',' ').Trim()
+        })
+        if($cells.Count-ne5-or$cells[0]-notmatch("^$Major\.0\.\d+\.\d+$")){continue}
+        if($cells[2]-notmatch'^CU\d+(?:\s*\+\s*GDR)?$'-or$cells[3]-notmatch'^KB\d+$'){continue}
+        $date=[datetime]::ParseExact($cells[4],'MMMM d, yyyy',[Globalization.CultureInfo]::InvariantCulture)
+        [pscustomobject]@{Name=$cells[2];Version=$cells[0];KB=$cells[3];Released=$date.ToString('yyyy-MM-dd')}
+    }
+}
+
+function Select-SqlUpdateStep {
+    param([object[]]$History,[version]$CurrentVersion)
+    $ordered=@($History|Sort-Object @{Expression={[version]$_.Version};Descending=$true})
+    if(-not$ordered.Count){throw 'Microsoft history contains no supported CU/security builds. No older CU fallback is allowed.'}
+    $target=$ordered[0]
+    $step=$target
+    if($target.Name-match'^(CU\d+)\s*\+\s*GDR$'){
+        $baseName=$matches[1]
+        $base=@($History|Where-Object Name -eq $baseName)
+        if($base.Count-ne1){throw 'Security update prerequisite CU is ambiguous or missing.'}
+        if($CurrentVersion-lt[version]$base[0].Version){$step=$base[0]}
+    }
+    [pscustomobject]@{Step=$step;Target=$target;IsPrerequisite=($step.Version-ne$target.Version)}
+}
+
+function Assert-SqlHistoryUpdate {
+    param($Update,[int]$Major,[switch]$Prerequisite)
+    $release=Get-SqlRelease $Major
+    $kb=switch($Major){15{'kb4518398'}16{'kb5023451'}17{'kb5005684'}}
+    $url='https://support.microsoft.com/en-us/servicing/sql/sql-server-'+$release.Year+'/'+$kb+'-build-versions'
+    try { $html=(Invoke-WebRequest $url -UseBasicParsing -UserAgent 'SqlExpressWindowsMaintenance/1.2.0' -TimeoutSec 60).Content }
+    catch {
+        $url='https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-'+$release.Year+'/build-versions'
+        $html=(Invoke-WebRequest $url -UseBasicParsing -UserAgent 'SqlExpressWindowsMaintenance/1.2.0' -TimeoutSec 60).Content
+    }
+    $found=$false;$highest=[version]'0.0'
+    foreach($row in [regex]::Matches($html,'<tr[^>]*>[\s\S]*?</tr>','IgnoreCase')){
+        $text=[regex]::Replace([Net.WebUtility]::HtmlDecode([regex]::Replace($row.Value,'<[^>]+>',' ')),'\s+',' ').Trim()
+        $build=[regex]::Match($text,"^CU\d+(?:\s*\+\s*GDR)?(?:\s+\(Latest\))?\s+($Major\.0\.\d+\.\d+)\b",'IgnoreCase')
+        if($build.Success-and[version]$build.Groups[1].Value-gt$highest){$highest=[version]$build.Groups[1].Value}
+        $pattern='^'+[regex]::Escape($Update.Name)+'(?:\s+\(Latest\))?\s+'+[regex]::Escape($Update.Version)+'\s+.*?\b'+[regex]::Escape($Update.KB)+'\b'
+        if($text-match$pattern){$found=$true}
+    }
+    if($found-and($Prerequisite-or[version]$Update.Version-eq$highest)){return}
+    throw 'Microsoft build histories disagree on the selected SQL update. No older update will be substituted.'
+}
+
+function Get-CatalogSqlMedia {
+    param($Update,[int]$Major)
+    $year=(Get-SqlRelease $Major).Year
+    if($Update.KB-notmatch'^KB\d+$'){throw 'Invalid KB identifier.'}
+    $search=(Invoke-WebRequest ('https://www.catalog.update.microsoft.com/Search.aspx?q='+$Update.KB) -UseBasicParsing -TimeoutSec 60).Content
+    $ids=@(foreach($m in [regex]::Matches($search,'([a-f0-9-]{36})_link[^>]*>([\s\S]*?)</a>','IgnoreCase')){
+        $title=[regex]::Replace($m.Groups[2].Value,'<[^>]+>',' ')
+        if($title-match("SQL Server\s+$year\b")-and$title-match('\b'+$Update.KB+'\b')){$m.Groups[1].Value}
+    })
+    $ids=@($ids|Select-Object -Unique)
+    if($ids.Count-ne1){throw "Expected one SQL Server $year $($Update.KB) Catalog entry; found $($ids.Count). Use reviewed local media."}
+    $body=@{updateIDs=(ConvertTo-Json -InputObject @(@{size=0;updateID=$ids[0];uidInfo=$ids[0]}) -Compress)}
+    $dialog=(Invoke-WebRequest 'https://www.catalog.update.microsoft.com/DownloadDialog.aspx' -Method Post -Body $body -UseBasicParsing -TimeoutSec 60).Content
+    $urls=@([regex]::Matches($dialog,"downloadInformation\[0\]\.files\[(\d+)\]\.url\s*=\s*'([^']+)'")|Where-Object{
+        $_.Groups[2].Value-match("/sqlserver$year-"+$Update.KB+'-x64(?:_[a-f0-9]+)?\.exe$')
+    })
+    if($urls.Count-ne1){throw 'Catalog did not return one matching x64 SQL executable.'}
+    $uri=[uri]$urls[0].Groups[2].Value
+    if($uri.Scheme-ne'https'-or$uri.Host-notin@('catalog.s.download.windowsupdate.com','download.windowsupdate.com','download.microsoft.com')){throw 'Unexpected Catalog download host.'}
+    $index=$urls[0].Groups[1].Value
+    $digest=[regex]::Match($dialog,"downloadInformation\[0\]\.files\[$index\]\.sha256\s*=\s*'([^']+)'")
+    if(-not$digest.Success){throw 'Catalog SHA-256 missing.'}
+    $bytes=[Convert]::FromBase64String($digest.Groups[1].Value)
+    if($bytes.Length-ne32){throw 'Invalid Catalog SHA-256.'}
+    [pscustomobject]@{Uri=$uri.AbsoluteUri;Sha256=([BitConverter]::ToString($bytes).Replace('-',''));FileName="SQLServer$year-$($Update.KB)-x64.exe"}
+}
+
+function Get-LatestUpdate {
+    param([Parameter(Mandatory)][int]$Major,[Parameter(Mandatory)][version]$CurrentVersion)
+    $null=Get-SqlRelease $Major
+    if($CurrentVersion.Major-ne$Major){throw 'Current SQL version does not match selected major.'}
+    [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
+    $url='https://support.microsoft.com/en-us/servicing/sql/kb321185-download-and-install-latest-updates'
+    $html=(Invoke-WebRequest $url -UseBasicParsing -UserAgent 'SqlExpressWindowsMaintenance/1.2.0' -TimeoutSec 60).Content
+    $plan=Select-SqlUpdateStep @(Convert-SqlHistory $html $Major) $CurrentVersion
+    Assert-SqlHistoryUpdate $plan.Target $Major
+    if($plan.IsPrerequisite){Assert-SqlHistoryUpdate $plan.Step $Major -Prerequisite}
+    $media=Get-CatalogSqlMedia $plan.Step $Major
+    [pscustomobject]@{Name=$plan.Step.Name;KB=$plan.Step.KB;Version=$plan.Step.Version;Released=$plan.Step.Released;Uri=$media.Uri;FileName=$media.FileName;Sha256=$media.Sha256;IsPrerequisite=$plan.IsPrerequisite;FinalVersion=$plan.Target.Version;FinalName=$plan.Target.Name;FinalKB=$plan.Target.KB;FinalReleased=$plan.Target.Released}
 }
 
 function Test-Yes {
